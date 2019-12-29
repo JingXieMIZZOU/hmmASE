@@ -1,0 +1,93 @@
+---
+title: "Detection of Differentially Allelic Expressed Regions (DAERs) by hmmASE"
+output: pdf_document
+author: "Jing Xie"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+The package $hmmASE$ performs detection of differentially allelic expressed regions (DAERs) by hmmASE method. Depending on the if there exhibits allelic specific expression in the normal group, and whether if the allelic preference for two groups are different, there would be 9 possible states for each SNP, i.e., B-Neutral, B-Hyper, B-hypo, M-Neutral, M-Hyper, M-hypo, P-Neutral, P-Hyper, P-hypo. The letter "B", "M" and "P" represents "Balanced", "Maternal preference" and "Paternal preference" for the normal group respectively, wheras the term "Hyper","Hypo" and "Neutral" refers to the difference between the ASE ratios between abnorm and normal group. For example, a region or a single SNP cite which has state "M_hyper" means the proportion of gene expression comes from maternal allele is significantly greater than that of paternal allele in the normal group, and this proportion in the abnormal group is even greater than the normal group which means the abnormal group exhibits a stronger maternal preference. The common assupmption of the indepedence between SNPs is not realistic and is too simplistic to understand the complexity of the data. The hmmASE method is based on a bayesian hidden markov model thus can take into account the correlation between adjecent SNPs and gives a more accurate inference about the hidden states of each SNP. In this manual, we first illustarte the usage of this package by providing a quick start guide. Then a step-by-step example will show addtional functionlity and features, and provides more insights about this package.
+
+## Quick start guide
+Given the read counts data from both alleles for the normal and abnormal groups, the detection of differentially allelic expressed regions (or SNP) can be performed by calling the function $ASE.HMM()$. Except for the specification of the raw data for each groups and each allele, users need to specify: (1) the number of biological replicates in their data by $rep=c(r_1,r_2)$; (2) whether or not to remove the outliers in the original data and also the cutoff to define outliers if $ex.rm=TRUE$; (3) the decoding approach for Hidden Markov model, global decoding or local decoding method; (4) the minimum length of the desired regions and minimum number of SNPs and maximum distance between two adjecent SNPs inside a region. Although we provide the option to remove the extreme data from the HMM model, we recommend careful attention to this option as well as the choice of the cutoff value, since the removal of a large part of data from the HMM sequence would affect the accuracy of states inferences.
+
+```
+library("hmmASE")
+toy.norm.M<- read.csv(file="Yourdata.norm.M.csv")
+toy.abnorm.M<- read.csv(file="Yourdata.abnorm.M.csv")
+toy.norm.P<- read.csv(file="Yourdata.norm.P.csv")
+toy.abnorm.P<- read.csv(file="Yourdata.abnorm.P.csv")
+
+region.res<- ASE.HMM(norm.M = toy.norm.M,norm.P = toy.norm.P,abnorm.M =   toy.abnorm.M,abnorm.P = toy.abnorm.P,ex.rm=FALSE,decoding="Global",rep=c(4,4),
+                   min.length=0,min.SNP=1,max.dist=1e20,cutoff=6.9)
+
+```
+## Example
+In this section, we will show how to apply $hmmASE$ package to perform DAERs detection step by step. The starting point is to read in the four raw data sets which contain the read counts from maternal and paternal allele for two groups. Note that the dataset need to be in the same structure as the toy datasets in this package. Specifically, the first 4 columns should be Chromosome, GeneID, Gene_name and Position, and the last last a few columns would be the read counts data. If the information about chromosome, GeneID or Gene_name is not available, one may still need to include the empty column. The number of biological replicates can differ for two groups.
+
+```{r}
+library("hmmASE")
+library("dplyr")
+data("toy.norm.M")
+data("toy.abnorm.M")
+data("toy.norm.P")
+data("toy.abnorm.P")
+head(toy.abnorm.M,n=10)
+head(toy.abnorm.P,n=10)
+head(toy.norm.M,n=10)
+head(toy.norm.P,n=10)
+```
+
+The first step of $hmmASE$ workflow is to apply the Haldane-Anscombe correction and then transform the raw read counts data into the format that the Hidden Markov model base on, i.e., the logit transformation of the ASE ratio in normal group $O_1$ and the difference of the ASE ratios for two groups in logit form $O_2$. The $data.prep\,()$ function can do this job and we need to specify the number of replicates for each group by $rep=c(r_1,\,r_2)$ where $r_1$ and $r_2$ are the number of biological replicates for normal and abnormal group respectively.
+
+``` {r}
+rawinput<- data.prep(norm.M=toy.norm.M,norm.P=toy.norm.P,
+                        abnorm.M=toy.abnorm.M,abnorm.P=toy.abnorm.P,rep=c(4,4))
+head(rawinput,5)
+```
+
+The second step is to estimate the initial value of the parameters by calling the $data.trans\,()$ function.
+
+```{r}
+rawinput_r<- data.trans(rawinput)
+names(rawinput_r)
+head(rawinput_r[[1]],5)
+names(rawinput_r[[2]])
+```
+
+The third step is to update the parameters by the EM algorithm and find the best sequence of predicted hidden states by decoding the Hidden Markov model. There are two options of decoding method in this package, local decoding and global decoding (Viterbi algorithm). 
+
+```{r}
+res.rawinput<- EM(initial.value=rawinput_r[[2]], 
+                              obs=rawinput_r[[1]],decoding="Global")
+names(res.rawinput)
+```
+
+In the final step, we put together the information in the raw input data and the predicted hidden states, and then find the regions where there are one or more consecutive SNPs. By setting $min.length=0,\,min.SNP=1,\,max.dist=10^{20}$, we are loosing the contraints of the desired regions. Therefore, both the regions contains multiple SNPs and the single SNP cite which has different ASE status as its neighbor SNPs would be reported. Users may adjust the constraints accordingly.
+
+```{r}
+RES<- res.rawinput$res
+RES<- RES[order(RES$Position),]
+region.in<- RES[,c(2,3,4,6)]
+region.in<- merge(rawinput,region.in,by=c("Position","O1","O2"))
+region.in<- region.in[order(region.in$Position),c(5:7,1:3,8)]
+region.in$dist<- c(0,diff(region.in$Position))
+head(region.in,5)
+Joint.region<- Region.Infer(EM.out=region.in,
+                                min.length=0,
+                                min.SNP=1,
+                                max.dist=1e20
+                                )$region
+head(Joint.region,5)        
+```
+
+
+
+
+
+
+
+
